@@ -1,0 +1,43 @@
+plugins {
+    id 'java'
+    id 'maven-publish'
+}
+
+group = 'seakers'
+version = '1.0'
+sourceCompatibility = 12
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+    jcenter()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.9.1')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    implementation 'seakers:vassarexecheur:1.0'
+    implementation 'org.moeaframework:moeaframework:2.12'
+    implementation 'net.sf.py4j:py4j:0.10.9.7'
+    implementation 'seakers:system-architecture-problems:1.0'
+    implementation 'seakers:vassar:1.0'
+    implementation 'seakers:vassarheur:1.0'
+    implementation files('C:\\Users\\dforn\\Documents\\TEXASAM\\PROJECTS\\VASSAR_lib\\jess.jar')
+
+
+}
+
+test {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifactId = 'vassargenerative'
+            groupId = 'seakers'
+            version = '1.0'
+            from components.java
+        }
+    }
+}
