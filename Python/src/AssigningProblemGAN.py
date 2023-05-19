@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 from keras.losses import binary_crossentropy
 from tensorflow.keras.models import load_model
 import pandas as pd
-import math
 from pymoo.indicators.hv import HV
 from pymoo.indicators.gd import GD
 import sys
@@ -30,8 +29,8 @@ class AssigningProblemGAN:
         self.num_examples = 700
         self.latent_dim = 256
         self.batch_size = 1
-        self.num_epochs = 15
-        self.num_episodes = 7
+        self.num_epochs = 30
+        self.num_episodes = 10
         self.learning_rate = 0.002
         self.beta1 = 0.1
         self.generator_optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=self.beta1)
@@ -98,10 +97,6 @@ class AssigningProblemGAN:
  
 
     def evaluate_design(self,designs):
-        # power = tf.reduce_sum(tf.multiply(design, self.component_power), axis=-1)
-        # cost = tf.reduce_sum(tf.multiply(design, self.component_costs), axis=-1)
-        # fitness = power/cost
-        # return power,cost,fitness
         if len(designs) == 60:
             return Client.evaluate(designs)
         else:
@@ -172,6 +167,7 @@ class AssigningProblemGAN:
                                 best_designs.pop(i)
                                 costs.pop(i)
                                 sciences.pop(i)
+                                self.pareto_objectives.pop(i)
 
                         best_designs.append(sol)
                         costs.append(cost)
@@ -197,10 +193,10 @@ class AssigningProblemGAN:
                     costs = costs.reshape(-1, 1)
                     sciences = sciences.reshape(-1, 1)
 
-                    np.save(os.path.join(path, 'initial_pareto_2.npy'), np.hstack((costs, sciences, designs)))
+                    np.save(os.path.join(path, 'initial_pareto_wl.npy'), np.hstack((costs, sciences, designs)))
 
                     # Save as CSV
-                    np.savetxt(os.path.join(path, 'initial_pareto_2.csv'), np.hstack((costs, sciences, designs)), delimiter=',')
+                    np.savetxt(os.path.join(path, 'initial_pareto_wl.csv'), np.hstack((costs, sciences, designs)), delimiter=',')
 
                     plt.savefig(os.path.join(path, 'Pareto_Front_INIT' + model_name))
                 plt.show()
@@ -214,31 +210,23 @@ class AssigningProblemGAN:
             path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Pareto_Front'
 
             # Load the data from the saved files
-            data = np.load(os.path.join(path, 'initial_pareto.npy'))
+            data = np.load(os.path.join(path, 'initial_pareto_2.npy'))
             costs = data[:, 0]  # Extract the costs column
             sciences = data[:, 1]  # Extract the sciences column
             designs = data[:, 2:]  # Extract the designs columns
+            sciences = -sciences/self.science_max
+            costs = costs/self.cost_max
+            designs_tuple = [tuple(design) for design in designs]
+            for i,design in enumerate(designs_tuple):
+                self.evaluated_designs[design] = sciences[i],costs[i]
+                self.pareto_objectives.append((-sciences[i],costs[i]))
+
 
             # # Display the loaded data
             # print("Costs:", costs)
             # print("Sciences:", sciences)
             # print("Designs:", designs)
             return designs
-
-
-    def normalize(self,set):
-        normalized_solutions = []
-        for solution in set:
-            power, cost, _ = self.evaluate_design(solution)
-            power_normalized = float(power) / float(self.max_power)
-            cost_normalized = float(cost) / float(self.max_cost)
-            normalized_solutions.append((power_normalized, cost_normalized))
-        return normalized_solutions
-    
-        
-
-
-
 
     #def pareto_loss(self, current_pareto, design):
     #    n_pareto = np.array(self.normalize(current_pareto))
@@ -262,35 +250,32 @@ class AssigningProblemGAN:
         return best_distance
 
 
-
-
-
-
-
     #def generator_loss(self, fake_output):
 
     #  return tf.reduce_mean(tf.math.log(1 - fake_output))
 
     def generator_loss(self,fake_output):
-        return tf.keras.losses.binary_crossentropy(tf.ones_like(fake_output), fake_output)
+        return tf.reduce_mean(tf.keras.losses.binary_crossentropy(tf.ones_like(fake_output), fake_output))
 
-    def discriminator_loss(self, real_output, fake_output):
-        d_loss_real = tf.reduce_mean(binary_crossentropy(tf.ones_like(real_output), real_output))
-        d_loss_fake = tf.reduce_mean(binary_crossentropy(tf.zeros_like(fake_output), fake_output))
-        d_loss = (d_loss_real + d_loss_fake) / 2
+    # def discriminator_loss(self, real_output, fake_output):
+    #     d_loss_real = tf.reduce_mean(binary_crossentropy(tf.ones_like(real_output), real_output))
+    #     d_loss_fake = tf.reduce_mean(binary_crossentropy(tf.zeros_like(fake_output), fake_output))
+    #     d_loss = (d_loss_real + d_loss_fake) / 2
 
-        return d_loss
+    #     return d_loss
     
     # Wasserstein losses
-    # def discriminator_loss(self,real_output, fake_output):
-    #    return tf.reduce_mean(fake_output) - tf.reduce_mean(real_output)
+    def discriminator_loss(self,real_output, fake_output):
+       return tf.reduce_mean(fake_output) - tf.reduce_mean(real_output)
 
     def generator_wasserstein_loss(self,fake_output):
        return -tf.reduce_mean(fake_output)
 
 
     def generator_total_loss(self, fake_output, designs_science, designs_cost):
-        return self.generator_loss(fake_output) + self.pareto_loss(designs_science, designs_cost)
+        g_loss = self.generator_wasserstein_loss(fake_output) 
+        p_loss = tf.cast(self.pareto_loss(designs_science, designs_cost), tf.float32)
+        return g_loss + p_loss
 
 
     def generate_real_samples(self,num_samples):
@@ -303,13 +288,6 @@ class AssigningProblemGAN:
         return X
     
 
-
-    #def constraint_satisfaction(self):
-
-
-
-
-    
     def generate_fake_samples(self, training):
         if self.batch_size <= 1:
             n_samples = 1
@@ -348,17 +326,12 @@ class AssigningProblemGAN:
         data = self.generate_real_samples(self.num_examples)
         #real_data = dataArray
         
-
-
-
-
-
         for nep in range(self.num_episodes):
 
             print(f"Episode {nep}")
             #calculate = nep!= 0
-            real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=True)
-            real_data = self.pareto_front_calculator(solutions=real_data, show=nep==0, save=nep==0, calculate=True)
+            real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=False)
+            #real_data = self.pareto_front_calculator(solutions=real_data, show=nep==0, save=nep==0, calculate=True)
             #real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=nep!=0)
             self.batch_size=len(real_data)
             real_data_sliced = self.create_batches(real_data)
@@ -494,7 +467,7 @@ class AssigningProblemGAN:
 
                 
 
-model_name = 'BCEPL1000'
+model_name = 'WL1'
 
 
 GAN = AssigningProblemGAN(model_name=model_name)
@@ -505,50 +478,13 @@ GAN = AssigningProblemGAN(model_name=model_name)
 # costs = data[:, 0]  # Extract the costs column
 # sciences = data[:, 1]  # Extract the sciences column
 # designs = data[:, 2:]  # Extract the designs columns
-
-#pareto = GAN.pareto_front_calculator(designs, show=True, save=False)
-
-#design_space = list(itertools.product([0, 1], repeat=15))
-#dataArray = np.array(design_space)
-#np.savetxt('design_space.csv', design_space, delimiter=',')
-# Load the design space from the file
-#design_space = np.loadtxt('design_space.csv', delimiter=',')
-#percentage = GAN.percentage_budget_fulfilled(design_space)
-
-#print(percentage)
-# Save the design space to a file
-
-#optimal_pareto = GAN.pareto_front_calculator(design_space,True,True)
-
-#data = np.load('optimal_pareto.npy')
-
-
-#np.savetxt('optimal_pareto.csv', data, delimiter=",")
-
-
-#savings = data[0]
-#powers = data[1]
-
-
-#plt.scatter(savings, powers)
-#plt.xlabel('Savings (Max_cost - cost)')
-#plt.ylabel('Generated Power')
-#plt.show()
-#Client.say_hello('David')
-
-#GAN.train()
-
-
-
-
-
-
-#GAN.generator.save(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Models\generator_model_'+model_name+'.h5')
+GAN.train()
+GAN.generator.save(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Models\generator_model_'+model_name+'.h5')
 
 
 
 ## Load the saved generator model
-generator = load_model(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Models\generator_model_'+model_name+'.h5', custom_objects={'generator_total_loss': GAN.generator_total_loss, 'discriminator_loss':GAN.discriminator_loss, 'genarator_loss':GAN.generator_loss})
+utigenerator = load_model(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Models\generator_model_'+model_name+'.h5', custom_objects={'generator_total_loss': GAN.generator_total_loss, 'discriminator_loss':GAN.discriminator_loss, 'genarator_loss':GAN.generator_loss})
 # Generate designs
 num_designs = input('Number of designs: ')
 
@@ -562,7 +498,7 @@ df = pd.DataFrame(columns=['instrument_{}'.format(i+1) for i in range(15)] + ['c
 num_designs = int(num_designs)
 GAN.latent_dim = int(GAN.latent_dim)
 noise = tf.random.normal([num_designs, GAN.latent_dim])
-designs = generator.predict(noise)
+designs = GAN.generator.predict(noise)
 binary_designs = np.round(designs)
 print(binary_designs)
 sciences = []
