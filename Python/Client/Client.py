@@ -5,7 +5,7 @@ import numpy as np
 
 
 
-def evaluate(design):
+def evaluateA(design):
     # Create a Java gateway client
     #design = design.numpy().astype(np.float64)
     
@@ -25,30 +25,38 @@ def evaluate(design):
 
 
 
-
-    # model_output_list = JavaList(model_output, gateway.jvm)
-    # target_output_list = JavaList(target_output, gateway.jvm)
-    # Call the computeLoss method with the Java lists
-
-# # Create a Java gateway client
-# gateway = JavaGateway()
-
-# # Get a reference to the Java object
-# my_java_object = gateway.entry_point
-
-# model_output = [0.1, 0.2, 0.3, 0.4]
-# target_output = [0.2, 0.3, 0.4, 0.5]
-
-# java_list_model = gateway.jvm.java.util.ArrayList()
-# java_list_target = gateway.jvm.java.util.ArrayList()
-# for i in range(len(model_output)):
+def evaluateP(instruments, orbits):
+    # Create a Java gateway client
+    #design = design.numpy().astype(np.float64)
     
-#     java_list_model.append(model_output[i])
-#     java_list_target.append(target_output[i])
 
-# # model_output_list = JavaList(model_output, gateway.jvm)
-# # target_output_list = JavaList(target_output, gateway.jvm)
-# # Call the computeLoss method with the Java lists
-# loss = my_java_object.computeLoss(java_list_model, java_list_target)
+    gateway = JavaGateway()
+    # Get a reference to the Java object
+    my_java_object = gateway.entry_point
+    instruments_array = np.array(instruments, dtype=np.int32).tolist()  # Convert to list
+    orbits_array = np.array(orbits, dtype=np.int32).tolist()
+    if isinstance(instruments_array[0], list):
+        instruments_array = instruments_array[0]
+    
 
-# print(loss)
+    # Convert orbits to list if not already a list
+
+    if isinstance(orbits_array[0], list):
+        orbits_array = orbits_array[0]
+    # Convert Python lists to Java ArrayLists
+    java_list_instruments = gateway.jvm.java.util.ArrayList()
+    java_list_orbits = gateway.jvm.java.util.ArrayList()
+    for i in range(len(instruments)):
+        java_list_instruments.append(instruments_array[i])
+
+    for i in range(len(orbits)):
+        java_list_orbits.append(orbits_array[i])
+
+
+    
+
+    result = my_java_object.EvaluatePythonArchitecture(java_list_instruments,java_list_orbits)
+
+    return list(result)
+
+
