@@ -13,7 +13,6 @@ from os.path import abspath, dirname
 sys.path.append(dirname(dirname(abspath(__file__))))
 from Client import Client
 from tensorflow.keras import backend as K
-from pymoo.indicators.hv import Hypervolume
 
 import os
 
@@ -28,11 +27,12 @@ import itertools
 class PartitioningProblemGAN:
     def __init__(self, model_name):
         self.num_design_vars = 24
-        self.num_examples = 1999
+        self.num_examples = 9
+        self.num_pareto_fronts = 4
         self.latent_dim = 256
         self.batch_size = 1
-        self.num_epochs = 50
-        self.num_episodes = 20
+        self.num_epochs = 2
+        self.num_episodes = 2
         self.learning_rate = 0.002
         self.beta1 = 0.1
         self.generator_optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=self.beta1)
@@ -70,49 +70,8 @@ class PartitioningProblemGAN:
 
 
 
-    # def custom_activation_function(self, designs):
-    #     def custom_activation(designs_tensor):
-    #         designs_np = K.get_value(designs_tensor)  # Convert tensor to NumPy array
-
-    #         # Perform the necessary operations on the NumPy array
-
-    #         designs_int = designs_np.copy()
-    #         designs_dif = designs_np.copy()
-
-    #         for j, design in enumerate(designs_int):
-    #             instruments = design[0:self.num_instruments]
-    #             orbits = design[self.num_instruments:self.num_design_vars]
-    #             instruments_dif = design[0:self.num_instruments]
-    #             orbits_dif = design[self.num_instruments:self.num_design_vars]
-
-    #             for i, design_variable in enumerate(instruments):
-    #                 if design_variable < 0:
-    #                     instruments[i] = 0
-    #                     instruments_dif[i] = 0
-    #                 else:
-    #                     instruments[i] = int(instruments[i] * (self.num_instruments - 1))
-    #                     instruments_dif[i] = instruments[i] * (self.num_instruments - 1)
-
-    #             for i, design_variable in enumerate(orbits):
-    #                 if design_variable < 0:
-    #                     orbits[i] = -1
-    #                     orbits_dif[i] = -1
-    #                 else:
-    #                     orbits[i] = int(orbits[i] * (self.num_orbits - 1))
-    #                     orbits_dif[i] = orbits[i] * (self.num_orbits - 1)
-
-    #             designs_int[j] = np.append(instruments, orbits)
-    #             designs_dif[j] = np.append(instruments_dif, orbits_dif)
-
-    #         return designs_int
-
-    #     return tf.py_function(custom_activation, [designs], tf.float32)
-
-
 
     def custom_activation_function(self,x):
-        designs_int = x[:, :self.num_instruments]
-        designs_dif = x[:, :self.num_instruments]
         instruments_dif = x[:, :self.num_instruments]
         orbits_dif = x[:, self.num_instruments:self.num_design_vars]
         
@@ -180,15 +139,69 @@ class PartitioningProblemGAN:
 
             
             return Client.evaluateP(instruments,orbits) 
+    
+
+
+    def pareto_ranking(self, solutions, designs, max_fronts):
+        num_solutions = len(solutions)
+        dominated_count = [0] * num_solutions
+        pareto_fronts = []
+        pareto_designs = []
+
+        for i in range(num_solutions):
+            for j in range(num_solutions):
+                if i != j:
+                    if solutions[i][0] >= solutions[j][0] and solutions[i][1] <= solutions[j][1]:
+                        dominated_count[i] += 1
+
+        current_front = []
+        current_front_designs = []
+        for i in range(num_solutions):
+            if dominated_count[i] == 0:
+                current_front.append(i)
+                current_front_designs.append(designs[i])
+
+        while current_front:
+            next_front = []
+            next_front_designs = []
+            for i in current_front:
+                for j in range(num_solutions):
+                    if i != j and solutions[j] is not None:
+                        if solutions[j][0] >= solutions[i][0] and solutions[j][1] <= solutions[i][1]:
+                            dominated_count[j] -= 1
+                            if dominated_count[j] == 0:
+                                next_front.append(j)
+                                next_front_designs.append(designs[j])
+
+            pareto_fronts.append(current_front)
+            pareto_designs.append(current_front_designs)
+
+            current_front = next_front
+            current_front_designs = next_front_designs
+
+            if len(pareto_fronts) >= max_fronts:
+                break
+
+        # Remove designs that are not part of any Pareto front
+        for i in range(len(pareto_designs)):
+            pareto_designs[i] = [design for design in pareto_designs[i] if design is not None]
+
+        pareto_fronts = pareto_fronts[::-1]
+        pareto_designs = pareto_designs[::-1]
+
+        return pareto_fronts, pareto_designs
+
+
         
         
 
-    def pareto_front_calculator(self, solutions, show, save = False, calculate = True):
+    def pareto_front_calculator(self, solutions, show, name, save = False, calculate = True):
 
         if calculate:
             costs = []
             sciences = []
             best_designs = []
+            values = []
 
             for i,sol in enumerate(solutions):
                 sol = tuple(sol)
@@ -197,6 +210,8 @@ class PartitioningProblemGAN:
                     science_normalized, cost_normalized = self.evaluated_designs[sol]
                     science=-science_normalized*self.science_max
                     cost = self.cost_max*cost_normalized
+                    costs.append(cost)
+                    sciences.append(science)
 
                 else:
                     print('Evaluating design '+str(i+1)+' out of '+str(len(solutions)))
@@ -208,41 +223,39 @@ class PartitioningProblemGAN:
                     science=-science_normalized*self.science_max
                     cost = self.cost_max*cost_normalized
                     self.evaluated_designs[sol] = science_normalized, cost_normalized
+                    self.pareto_objectives.append([-science_normalized,cost_normalized])
+                    costs.append(cost)
+                    sciences.append(science)
+
+                values.append([science,cost])
+                best_designs.append(sol)
 
 
-                
 
-                dominated = False
-                for i, design in enumerate(best_designs):
-                    p_science, p_cost = sciences[i], costs[i]
+            pareto_fronts, pareto_designs = self.pareto_ranking(values,best_designs,self.num_pareto_fronts)
 
-                    if (cost>= p_cost and science<=p_science) :
-                        dominated = True
-                        break
 
-                if dominated==False:
-                        for i, design in enumerate(best_designs):
-                            p_science, p_cost = sciences[i], costs[i]
-                            if cost<=p_cost and science>=p_science:
-                                best_designs.pop(i)
-                                costs.pop(i)
-                                sciences.pop(i)
-                                self.pareto_objectives.pop(i)
-
-                        best_designs.append(sol)
-                        costs.append(cost)
-                        sciences.append(science)
-                        self.pareto_objectives.append((-science_normalized,cost_normalized))
                     
-            if show or save:        
+            if show or save:
 
-                plt.figure('Pareto Front')
-                # plt.scatter(savings_opt, powers_opt, c='red', label='Optimal Pareto')
-                plt.scatter(costs, sciences,c='blue', label='Achieved Pareto')
-                
-                plt.xlabel('Cost')
-                plt.ylabel('Science benefit')
+                for i, front in enumerate(pareto_fronts):
+                    x = [values[index][0] for index in front]
+                    y = [values[index][1] for index in front]
+                    plt.scatter(x, y, label='Pareto Front {}'.format(i+1))
+
+                # Add labels and show the plot
+                plt.xlabel('Science benefit')
+                plt.ylabel('Cost')
+                plt.title('Pareto Fronts')
+                plt.xlim(0, 0.425)
+                plt.ylim(0, 25000)
                 plt.legend()
+                plt.grid(True)
+                plt.show()
+                print('Finished')
+                        
+
+              
                 if save:
                     path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\PartitioningProblem\Pareto_Front'
                     costs = np.array(costs)
@@ -253,21 +266,29 @@ class PartitioningProblemGAN:
                     costs = costs.reshape(-1, 1)
                     sciences = sciences.reshape(-1, 1)
 
-                    np.save(os.path.join(path, 'initial_pareto_wl.npy'), np.hstack((costs, sciences, designs)))
+                    np.save(os.path.join(path, name + '.npy'), np.hstack((costs, sciences, designs)))
 
                     # Save as CSV
-                    np.savetxt(os.path.join(path, 'initial_pareto_wl.csv'), np.hstack((costs, sciences, designs)), delimiter=',')
+                    np.savetxt(os.path.join(path, name + '.csv'), np.hstack((costs, sciences, designs)), delimiter=',')
 
-                    plt.savefig(os.path.join(path, 'Pareto_Front_INIT' + model_name))
+                    plt.savefig(os.path.join(path, name  + model_name))
 
                 if show:
 
                     plt.show()
 
 
-            return np.array(best_designs)
+            pareto_designs_array = np.concatenate(pareto_designs)
+
+
+
+
+
+            return pareto_designs_array
+
+        
+
         else:
-            
             # Specify the path to the saved files
 
             path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\PartitioningProblem\Pareto_Front'
@@ -283,22 +304,13 @@ class PartitioningProblemGAN:
             for i,design in enumerate(designs_tuple):
                 self.evaluated_designs[design] = sciences[i],costs[i]
                 self.pareto_objectives.append((-sciences[i],costs[i]))
-
-
             # # Display the loaded data
             # print("Costs:", costs)
             # print("Sciences:", sciences)
             # print("Designs:", designs)
             return designs
 
-    #def pareto_loss(self, current_pareto, design):
-    #    n_pareto = np.array(self.normalize(current_pareto))
-    #    n_design = np.array(self.normalize(design))
-        
-    #    ind = GD(n_pareto)
-    #    distance = ind(n_design)
-    #    #distance2 = self.pareto_loss2(current_pareto, design)
-    #    return distance
+
 
 
     def pareto_loss(self, science_design, cost_design):
@@ -327,40 +339,6 @@ class PartitioningProblemGAN:
 
         return d_loss
     
-
-    def calc_hv(self,pareto_front):
-        hv = Hypervolume(ref_point=np.array([1.0, 1.0]))
-        return hv.calc(pareto_front)
- 
-
-
-    def hypervolume_loss(self,current_pareto, new_designs):
-
-        pareto_values = self.evaluated_designs[current_pareto]
-        new_values = self.evaluated_designs[new_designs]
-        pareto_values = np.array(pareto_values)
-        new_values = np.array(new_values)
-
-        # Normalize science and cost values
-        normalized_pareto = pareto_values / np.array([self.science_max, self.cost_max])
-        normalized_new_designs = new_values / np.array([self.science_max, self.cost_max])
-
-        # Calculate the hypervolume of the current Pareto front
-        hv_current = self.calc_hv(normalized_pareto)
-
-        # Calculate the hypervolume of the combined Pareto front (current Pareto + new designs)
-        combined_pareto = np.concatenate((normalized_pareto, normalized_new_designs), axis=0)
-        hv_combined = self.calc_hv(combined_pareto)
-
-        # Calculate the difference in hypervolume
-        hv_difference = hv_combined - hv_current
-
-        return hv_difference
-    
-
-
-
-
     
     # Wasserstein losses
     # def discriminator_loss(self,real_output, fake_output):
@@ -375,7 +353,7 @@ class PartitioningProblemGAN:
         p_loss = tf.cast(self.pareto_loss(designs_science, designs_cost), tf.float32)
         div_loss = self.diversity_loss()
 
-        return self.disc_lambda*g_loss + self.pareto_lambda*p_loss + self.div_lambda*div_loss
+        return g_loss + p_loss
 
 
 
@@ -485,12 +463,13 @@ class PartitioningProblemGAN:
 
             print(f"Episode {nep}")
             #calculate = nep!= 0
-            real_data = self.pareto_front_calculator(solutions=data, show=False, save=False, calculate=False)
+            real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=True, name='Pareto_Front_INIT')
             #real_data = self.pareto_front_calculator(solutions=real_data, show=nep==0, save=nep==0, calculate=True)
             #real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=nep!=0)
             self.batch_size=len(real_data)
             real_data_sliced = self.create_batches(real_data)
             data = real_data
+
         
             for epoch in range(self.num_epochs):
                 g_losses_batch = []
@@ -500,7 +479,6 @@ class PartitioningProblemGAN:
 
 
                 for batch in real_data_sliced:
-            
                     with tf.GradientTape() as tape:
                         #generated_samples = self.generator(noise, training=False)
                         generated_samples=self.generate_fake_samples(training=False)
@@ -581,7 +559,7 @@ class PartitioningProblemGAN:
 
 
         print("Number of function evaluations during training: "+str(self.number_function_evaluations))
-        final_pareto = self.pareto_front_calculator(data,True)
+        self.pareto_front_calculator(data,show=True,save=True,name='Pareto_Front_END')
         path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\PartitioningProblem\Losses'
         plt.figure('G losses')
         plt.plot(g_losses, label='Generator loss')
@@ -591,20 +569,20 @@ class PartitioningProblemGAN:
         plt.savefig(path +  '\gl.png')
         plt.show()
 
-        plt.figure('Costs')
-        plt.plot(costs, label='Costs')
+        plt.figure('Cost evolution')
+        plt.plot(costs, label='Cost evolution')
         plt.xlabel('Epochs')
         plt.ylabel('Cost')
         plt.legend()
         plt.savefig(path + '\cost.png')
         plt.show()
 
-        plt.figure('Generated Power')
-        plt.plot(sciences, label='Generated Power')
+        plt.figure('Science benefit evolution')
+        plt.plot(sciences, label='Science benefit evolution')
         plt.xlabel('Epochs')
-        plt.ylabel('Power (Watts)')
+        plt.ylabel('Science benefit')
         plt.legend()
-        plt.savefig(path + '\pow.png')
+        plt.savefig(path + '\science.png')
         plt.show()
 
 
@@ -626,7 +604,7 @@ class PartitioningProblemGAN:
 
                 
 
-model_name = 'BCEDL'
+model_name = 'BCEPR'
 
 
 GAN = PartitioningProblemGAN(model_name=model_name)
