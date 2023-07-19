@@ -15,6 +15,7 @@ from Client import Client
 from tensorflow.keras import backend as K
 
 import os
+EPSILON = 1e-7
 
 
 # Separate loss functions for generator and discriminator
@@ -27,20 +28,20 @@ import itertools
 class PartitioningProblemGAN:
     def __init__(self, model_name):
         self.num_design_vars = 24
-        self.num_examples = 9
+        self.num_examples = 500
         self.num_pareto_fronts = 4
         self.latent_dim = 256
-        self.batch_size = 1
-        self.num_epochs = 2
-        self.num_episodes = 2
+        self.batch_size = 16
+        self.num_epochs = 30
+        self.num_episodes = 15
         self.learning_rate = 0.002
         self.beta1 = 0.1
         self.generator_optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=self.beta1)
         self.discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=self.beta1)
         self.number_function_evaluations = 0
         self.model_name = model_name
-        self.science_max = 0.425
-        self.cost_max = 25000.0
+        self.science_max = 0.4
+        self.cost_max = 7250
         self.pareto_objectives = []
         self.evaluated_designs = {}
         self.num_instruments = 12
@@ -142,54 +143,90 @@ class PartitioningProblemGAN:
     
 
 
-    def pareto_ranking(self, solutions, designs, max_fronts):
-        num_solutions = len(solutions)
-        dominated_count = [0] * num_solutions
+
+    def calculate_feasibility_metric(self,instrument_partitioning, orbit_assignment):
+        num_instruments = len(instrument_partitioning)
+        num_partitions = len(set(instrument_partitioning))
+        num_assigned_orbits = sum(orbit != -1 for orbit in orbit_assignment)
+
+        if num_assigned_orbits != num_partitions:
+            # Calculate the first condition distance
+            condition1_distance = abs(num_assigned_orbits - num_partitions) / num_instruments
+        else:
+            condition1_distance = 0
+
+        max_partition_index = 0
+        for partition in instrument_partitioning:
+            if partition > max_partition_index:
+                if partition != max_partition_index + 1:
+                    # Calculate the second condition distance
+                    condition2_distance = abs(partition - (max_partition_index + 1)) / float(partition)
+                    break
+                max_partition_index = partition
+        else:
+            condition2_distance = 0
+
+        # Calculate the overall feasibility metric as a weighted combination of the condition distances
+        feasibility_metric = (1 - condition1_distance) * (1 - condition2_distance)
+
+        print('Feasibility: ' + str(feasibility_metric))
+
+        return feasibility_metric
+    
+
+
+    def is_dominated(self,solution1, solution2):
+        science1, cost1 = solution1
+        science2, cost2 = solution2
+
+        if science1 >= science2 and cost1 <= cost2:
+            return True
+
+        return False
+
+    def compute_pareto(self,solutions):
+        pareto_front_indices = []
+        pareto_front_values = []
+        
+        for i in range(len(solutions)):
+            is_dominated_by_others = False
+            for j in range(len(solutions)):
+                if i != j and self.is_dominated(solutions[j], solutions[i]):
+                    is_dominated_by_others = True
+                    break
+            if not is_dominated_by_others:
+                pareto_front_indices.append(i)
+                pareto_front_values.append(solutions[i])
+        
+        return pareto_front_indices, pareto_front_values
+    
+
+
+    def pareto_ranking(self,values, designs, num_pareto_fronts):
         pareto_fronts = []
         pareto_designs = []
+        pareto_values = []
 
-        for i in range(num_solutions):
-            for j in range(num_solutions):
-                if i != j:
-                    if solutions[i][0] >= solutions[j][0] and solutions[i][1] <= solutions[j][1]:
-                        dominated_count[i] += 1
+        values = np.array(values)
+        designs = np.array(designs)
 
-        current_front = []
-        current_front_designs = []
-        for i in range(num_solutions):
-            if dominated_count[i] == 0:
-                current_front.append(i)
-                current_front_designs.append(designs[i])
+        remaining_values = values.copy()
+        remaining_designs = designs.copy()
 
-        while current_front:
-            next_front = []
-            next_front_designs = []
-            for i in current_front:
-                for j in range(num_solutions):
-                    if i != j and solutions[j] is not None:
-                        if solutions[j][0] >= solutions[i][0] and solutions[j][1] <= solutions[i][1]:
-                            dominated_count[j] -= 1
-                            if dominated_count[j] == 0:
-                                next_front.append(j)
-                                next_front_designs.append(designs[j])
+        for _ in range(num_pareto_fronts):
+            pareto_front_indices, pareto_front_values = self.compute_pareto(remaining_values)
+            pareto_front = [remaining_designs[i] for i in pareto_front_indices]
 
-            pareto_fronts.append(current_front)
-            pareto_designs.append(current_front_designs)
-
-            current_front = next_front
-            current_front_designs = next_front_designs
-
-            if len(pareto_fronts) >= max_fronts:
+            if len(pareto_front) == 0:
                 break
 
-        # Remove designs that are not part of any Pareto front
-        for i in range(len(pareto_designs)):
-            pareto_designs[i] = [design for design in pareto_designs[i] if design is not None]
+            pareto_fronts.append(pareto_front_indices)
+            pareto_designs.append(pareto_front)
+            pareto_values.append(pareto_front_values)
 
-        pareto_fronts = pareto_fronts[::-1]
-        pareto_designs = pareto_designs[::-1]
+            remaining_values = np.delete(remaining_values, pareto_front_indices, axis=0)
 
-        return pareto_fronts, pareto_designs
+        return pareto_values,pareto_designs
 
 
         
@@ -200,7 +237,10 @@ class PartitioningProblemGAN:
         if calculate:
             costs = []
             sciences = []
+            designs = []
             best_designs = []
+            best_costs = []
+            best_sciences = []
             values = []
 
             for i,sol in enumerate(solutions):
@@ -228,50 +268,56 @@ class PartitioningProblemGAN:
                     sciences.append(science)
 
                 values.append([science,cost])
-                best_designs.append(sol)
+                designs.append(sol)
 
 
 
-            pareto_fronts, pareto_designs = self.pareto_ranking(values,best_designs,self.num_pareto_fronts)
+            pareto_values, pareto_designs = self.pareto_ranking(values,designs,self.num_pareto_fronts)
 
 
                     
             if show or save:
 
-                for i, front in enumerate(pareto_fronts):
-                    x = [values[index][0] for index in front]
-                    y = [values[index][1] for index in front]
+                for i, front_values in enumerate(pareto_values):
+                    x = [val[0] for val in front_values]
+                    y = [val[1] for val in front_values]
+                    best_designs.extend(pareto_designs[i])
+                    best_sciences.extend(x)
+                    best_costs.extend(y)
+
                     plt.scatter(x, y, label='Pareto Front {}'.format(i+1))
+
+
+                
 
                 # Add labels and show the plot
                 plt.xlabel('Science benefit')
                 plt.ylabel('Cost')
                 plt.title('Pareto Fronts')
-                plt.xlim(0, 0.425)
-                plt.ylim(0, 25000)
+                plt.xlim(0, self.science_max)
+                plt.ylim(0, self.cost_max)
                 plt.legend()
                 plt.grid(True)
-                plt.show()
-                print('Finished')
-                        
 
               
                 if save:
                     path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\PartitioningProblem\Pareto_Front'
-                    costs = np.array(costs)
-                    sciences = np.array(sciences)
+
+                    plt.savefig(os.path.join(path, name  + model_name))
+
+                    costs = np.array(best_costs)
+                    sciences = np.array(best_sciences)
                     designs = np.array(best_designs)
+
 
                     # Convert costs and sciences to 2D arrays
                     costs = costs.reshape(-1, 1)
                     sciences = sciences.reshape(-1, 1)
 
-                    np.save(os.path.join(path, name + '.npy'), np.hstack((costs, sciences, designs)))
+                    np.save(os.path.join(path, name + '.npy'), np.hstack((sciences, costs, designs)))
 
                     # Save as CSV
-                    np.savetxt(os.path.join(path, name + '.csv'), np.hstack((costs, sciences, designs)), delimiter=',')
-
-                    plt.savefig(os.path.join(path, name  + model_name))
+                    np.savetxt(os.path.join(path, name + '.csv'), np.hstack((sciences, costs, designs)), delimiter=',')
 
                 if show:
 
@@ -279,6 +325,7 @@ class PartitioningProblemGAN:
 
 
             pareto_designs_array = np.concatenate(pareto_designs)
+            plt.close()
 
 
 
@@ -294,9 +341,9 @@ class PartitioningProblemGAN:
             path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\PartitioningProblem\Pareto_Front'
 
             # Load the data from the saved files
-            data = np.load(os.path.join(path, 'initial_pareto_part.npy'))
-            costs = data[:, 0]  # Extract the costs column
-            sciences = data[:, 1]  # Extract the sciences column
+            data = np.load(os.path.join(path, 'Pareto_Front_INIT.npy'))
+            sciences = data[:, 0]  # Extract the sciences column
+            costs = data[:, 1]  # Extract the costs column
             designs = data[:, 2:]  # Extract the designs columns
             sciences = -sciences/self.science_max
             costs = costs/self.cost_max
@@ -327,7 +374,7 @@ class PartitioningProblemGAN:
 
     #def generator_loss(self, fake_output):
 
-    #  return tf.reduce_mean(tf.math.log(1 - fake_output))
+    #  return tf.reduce_mean(tf.math.log(1 - fake_output)) 
 
     def generator_loss(self,fake_output):
         return tf.reduce_mean(tf.keras.losses.binary_crossentropy(tf.ones_like(fake_output), fake_output))
@@ -348,20 +395,32 @@ class PartitioningProblemGAN:
     #    return -tf.reduce_mean(fake_output)
 
 
-    def generator_total_loss(self, fake_output, designs_science, designs_cost):
+    def generator_total_loss(self, fake_output, designs_science, designs_cost, designs):
+
         g_loss = self.generator_loss(fake_output) 
         p_loss = tf.cast(self.pareto_loss(designs_science, designs_cost), tf.float32)
-        div_loss = self.diversity_loss()
+        #div_loss = self.diversity_loss()
+        # div_loss = self.diversity_score(designs)
 
-        return g_loss + p_loss
+        feasibility_score = 0
+
+        for design in designs:
+            instruments = tuple(design[:12].numpy())
+            orbits = tuple(design[12:].numpy())
+            feasibility_score += self.calculate_feasibility_metric(instruments,orbits)
+
+        feasibility_score = abs(feasibility_score/len(designs))
+
+
+        return g_loss + p_loss + (1-feasibility_score)
 
 
 
-    def generate_real_samples(self,num_samples):
-
+    def generate_real_samples(self, num_samples):
         data = []
-        training_data = np.zeros((1, self.num_design_vars)) 
-        for i in range(num_samples):
+        training_data = np.zeros((0, self.num_design_vars), dtype=int)  # Initialize as an empty array
+
+        while len(data) < num_samples:
             instrument_partitioning = np.zeros(self.num_instruments, dtype=int)
             orbit_assignment = np.zeros(self.num_instruments, dtype=int)
 
@@ -372,6 +431,7 @@ class PartitioningProblemGAN:
 
             sat_index = 0
             sat_map = {}
+
             for m in range(self.num_instruments):
                 sat_id = instrument_partitioning[m]
                 if sat_id in sat_map:
@@ -384,22 +444,25 @@ class PartitioningProblemGAN:
             instrument_partitioning.sort()
 
             num_sats = len(sat_map.keys())
+
             for n in range(self.num_instruments):
                 if n < num_sats:
                     orbit_assignment[n] = np.random.randint(self.num_orbits)
                 else:
                     orbit_assignment[n] = -1
 
-            data.append((tuple(instrument_partitioning),tuple(orbit_assignment)))
-            appended = np.append(instrument_partitioning, orbit_assignment)
-            training_data = np.vstack((training_data, np.append(instrument_partitioning, orbit_assignment)))
+            design_tuple = (tuple(instrument_partitioning), tuple(orbit_assignment))
 
+            if design_tuple not in data:  # Check if the design is already present in the data list
+                data.append(design_tuple)
+                appended = np.append(instrument_partitioning, orbit_assignment)
+                training_data = np.vstack((training_data, appended))
 
-        return training_data
+        return training_data[:num_samples]  # Return only the required number of samples
     
     def diversity_loss(self):
-        z1 = tf.random.uniform([1, self.latent_dim])
-        z2 = tf.random.uniform([1, self.latent_dim])
+        z1 = tf.random.uniform([100, self.latent_dim])
+        z2 = tf.random.uniform([100, self.latent_dim])
         generated1 = self.generator(z1)
         generated2 = self.generator(z2)
         diff_samples = generated1 - generated2
@@ -411,6 +474,19 @@ class PartitioningProblemGAN:
         div_loss = tf.reduce_mean(norm_diff_samples / norm_diff_z)
         
         return -div_loss
+    
+
+    def diversity_score(data, subset_size=10, sample_times=1000):
+        r = tf.reduce_sum(tf.square(data), axis=1, keepdims=True)
+        D = r - 2*tf.matmul(data, tf.transpose(data)) + tf.transpose(r)
+        S = tf.exp(-0.5*D) # similarity matrix (rbf)
+        # Average log determinant
+
+        eig_val, _ = tf.linalg.eigh(S)
+        loss = -tf.reduce_sum(tf.math.log(tf.maximum(eig_val, EPSILON)))
+
+        return loss
+
 
 
 
@@ -418,7 +494,7 @@ class PartitioningProblemGAN:
         if self.batch_size <= 1:
             n_samples = 1
         else:
-            n_samples = round(self.batch_size/2)
+            n_samples =2
 
         noise = tf.random.uniform([n_samples, self.latent_dim])
         generated_samples = self.generator(noise, training=training)
@@ -463,10 +539,10 @@ class PartitioningProblemGAN:
 
             print(f"Episode {nep}")
             #calculate = nep!= 0
-            real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=True, name='Pareto_Front_INIT')
-            #real_data = self.pareto_front_calculator(solutions=real_data, show=nep==0, save=nep==0, calculate=True)
+            real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=nep!=0, name='Pareto_Front_INIT')
+            #real_data = self.pareto_front_calculator(so lutions=real_data, show=nep==0, save=nep==0, calculate=True)
             #real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=nep!=0)
-            self.batch_size=len(real_data)
+            # self.batch_size=len(real_data)
             real_data_sliced = self.create_batches(real_data)
             data = real_data
 
@@ -514,8 +590,8 @@ class PartitioningProblemGAN:
                                 science -=s
                                 cost+=c
 
-                            science = science/len(generated_samples_thresh)
-                            cost = cost/len(generated_samples_thresh)
+                        science = science/len(generated_samples_thresh)
+                        cost = cost/len(generated_samples_thresh)
 
                         sciences.append(science)
                         costs.append(cost)
@@ -524,7 +600,7 @@ class PartitioningProblemGAN:
                         # gen_samples_soft = self.gumbel_softmax(generated_samples_thresh, 0.5)
                         #data = np.concatenate(data,generated_samples_thresh)
                         fake_output = self.discriminator(generated_samples, training=False)
-                        generator_loss = self.generator_total_loss(fake_output,science, cost)
+                        generator_loss = self.generator_total_loss(fake_output,science, cost,generated_samples_thresh)
                         grads = tape.gradient(generator_loss, self.generator.trainable_weights)
                         if len(grads) == 0:
                             grads = [tf.random.normal(w.shape) for w in self.generator.trainable_variables]
@@ -604,7 +680,7 @@ class PartitioningProblemGAN:
 
                 
 
-model_name = 'BCEPR'
+model_name = 'BCEPRfeasibility'
 
 
 GAN = PartitioningProblemGAN(model_name=model_name)
@@ -621,7 +697,7 @@ GAN.generator.save(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative
 
 
 ## Load the saved generator model
-utigenerator = load_model(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\PartitioningProblem\Models\generator_model_'+model_name+'.h5', custom_objects={'generator_total_loss': GAN.generator_total_loss, 'discriminator_loss':GAN.discriminator_loss, 'genarator_loss':GAN.generator_loss, 'custom_activation_function':GAN.custom_activation_function})
+generator = load_model(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\PartitioningProblem\Models\generator_model_'+model_name+'.h5', custom_objects={'generator_total_loss': GAN.generator_total_loss, 'discriminator_loss':GAN.discriminator_loss, 'genarator_loss':GAN.generator_loss, 'custom_activation_function':GAN.custom_activation_function})
 # Generate designs
 num_designs = input('Number of designs: ')
 

@@ -102,7 +102,7 @@ public class EvaluationPartitioning {
         double dcThreshold = 0.5;
         double massThreshold = 3000.0; // [kg]
         double packEffThreshold = 0.7;
-        boolean considerFeasibility = false; // use false only for biased random generation for random population runs
+        boolean considerFeasibility = true; // use false only for biased random generation for random population runs
 
         String savePath = System.getProperty("user.dir") + File.separator + "results";
 
@@ -132,11 +132,14 @@ public class EvaluationPartitioning {
 
         for(int j = 0; j < params.getNumInstr(); j++){
             instrumentPartitioning[j] = instruments.get(j);
+            orbitAssignment[j] = orbits.get(j);
+
         }
+
 
         HashMap<Integer, Integer> map = new HashMap<>();
         int satIndex = 0;
-        for(int m = 0; m < params.getNumInstr(); m++){
+        /*for(int m = 0; m < params.getNumInstr(); m++){
             int satID = instrumentPartitioning[m];
             if(map.keySet().contains(satID)){
                 instrumentPartitioning[m] = map.get(satID);
@@ -145,17 +148,17 @@ public class EvaluationPartitioning {
                 map.put(satID, satIndex);
                 satIndex++;
             }
-        }
-        Arrays.sort(instrumentPartitioning);
+        }*/
+        //Arrays.sort(instrumentPartitioning);
 
-        int numSats = map.keySet().size();
-        for(int n = 0; n < params.getNumInstr(); n++){
+        //int numSats = map.keySet().size();
+        /*for(int n = 0; n < params.getNumInstr(); n++){
             if(n < numSats){
                 orbitAssignment[n] = orbits.get(n);
             }else{
                 orbitAssignment[n] = -1;
             }
-        }
+        }*/
 
         PartitioningArchitecture arch = createPartitioningArchitecture(instrumentPartitioning, orbitAssignment, params);
 
@@ -166,8 +169,13 @@ public class EvaluationPartitioning {
         System.out.println("DONE");
 
 
+        double[] objectives = arch.getObjectives();
+        if (objectives[1]>=1)
+            objectives[1]=1;
 
-        return arch.getObjectives();
+
+
+        return objectives;
     }
 
 
@@ -196,7 +204,12 @@ public class EvaluationPartitioning {
      * @param params
      * @return Instrument interference hashmap
      */
-    protected static HashMap<String, String[]> getInstrumentInterferenceNameMap(BaseParams params) {
+
+
+
+
+
+        protected static HashMap<String, String[]> getInstrumentInterferenceNameMap(BaseParams params) {
         HashMap<String, String[]> interferenceNameMap = new HashMap<>();
         if (params.getProblemName().equalsIgnoreCase("ClimateCentric")) {
             interferenceNameMap.put("ACE_LID", new String[]{"ACE_CPR", "DESD_SAR", "CLAR_ERB", "GACM_SWIR"});
