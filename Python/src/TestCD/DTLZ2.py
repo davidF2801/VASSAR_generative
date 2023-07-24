@@ -7,7 +7,7 @@ def dtlz2(x):
 
     problem = get_problem("dtlz2", n_var=len(x), n_obj=2)
 
-    f = tuple(problem.evaluate(x)/3)
+    f = tuple(problem.evaluate(x)/1.5)
 
     return f
     # def dtlz2(x, num_objectives):

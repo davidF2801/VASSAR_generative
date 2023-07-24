@@ -14,6 +14,11 @@ sys.path.append(dirname(dirname(abspath(__file__))))
 from scipy.spatial.distance import pdist, squareform
 import DTLZ2 as e
 import os
+from pymoo.problems import get_problem
+from pymoo.util.plotting import plot
+from pymoo.util.ref_dirs import get_reference_directions
+from pymoo.visualization.scatter import Scatter
+
 EPSILON = 1e-7
 
 
@@ -31,8 +36,8 @@ class AssigningProblemGAN:
         self.num_examples = 5000
         self.latent_dim = 256
         self.batch_size = 8
-        self.num_epochs = 30
-        self.num_episodes = 7
+        self.num_epochs = 15
+        self.num_episodes = 3
         self.learning_rate = 0.002
         self.beta1 = 0.1
         self.generator_optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=self.beta1)
@@ -182,7 +187,7 @@ class AssigningProblemGAN:
         science1, cost1 = solution1
         science2, cost2 = solution2
 
-        if science1 <= science2 and cost1 <= cost2:
+        if science1 >= science2 and cost1 >= cost2:
             return True
 
         return False
@@ -276,13 +281,16 @@ class AssigningProblemGAN:
 
             pareto_values, pareto_designs = self.pareto_ranking(values,designs,self.num_pareto_fronts)
 
+            # Separate the first and second values into two different lists
+            obj1 = []
+            obj2 = []
             for pareto in pareto_values:
-                obj1 = [arr[0] for arr in pareto]
-                obj2 = [arr[1] for arr in pareto]
+                for numpy_array in pareto:
+                    first_value, second_value = numpy_array[0], numpy_array[1]
+                    obj1.append(first_value)
+                    obj2.append(second_value)
 
-
-
-            if show or save:
+            if show or save: 
 
                 for i, front_values in enumerate(pareto_values):
                     x = [val[0] for val in front_values]
@@ -307,7 +315,7 @@ class AssigningProblemGAN:
 
               
                 if save:
-                    test_name = 'Test6'  # Replace with the desired test name
+                    test_name = 'Test6Max'  # Replace with the desired test name
                     path = os.path.join(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\ContinuousVariables\Pareto_Front', test_name)
 
                     os.makedirs(path, exist_ok=True)  # Create the directory if it doesn't exist
@@ -349,7 +357,7 @@ class AssigningProblemGAN:
         else:
             # Specify the path to the saved files
 
-            path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\ContinuousVariables\Pareto_Front\Test6'
+            path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\ContinuousVariables\Pareto_Front\Test6Max'
 
             # Load the data from the saved files
             data = np.load(os.path.join(path, 'Pareto_Front_INIT.npy'))
@@ -552,8 +560,9 @@ class AssigningProblemGAN:
             #real_data = self.pareto_front_calculator(solutions=real_data, show=nep==0, save=nep==0, calculate=True)
             #real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=nep!=0)
             #self.batch_size=len(real_data)
-            real_data_sliced = self.create_batches(real_data)
-            data = real_data
+            # Determine the maximum length of sequences in the data
+            real_data_sliced = self.create_batches(real_data[0])
+            data = real_data[0]
         
             for epoch in range(self.num_epochs):
                 g_losses_batch = []
@@ -655,8 +664,24 @@ class AssigningProblemGAN:
                     print(generated_samples)
 
 
+        
+        ref_dirs = get_reference_directions("das-dennis", 2, n_partitions=12)
+
+        pf = get_problem("dtlz2").pareto_front(ref_dirs)
+        # Create the scatter plot
+        scatter_plot = Scatter(angle=(45, 45), marker='s', color='purple')
+        scatter_plot.add(pf)
+
+        # Save the scatter plot to a file (e.g., "pareto_front.png")
+        file_name = "pareto_front.png"
+        path = r"C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\ContinuousVariables\Pareto_Front\Test6Max\\"
+
+        scatter_plot.save(path+file_name)
+
+
         print(self.number_function_evaluations)
         self.pareto_front_calculator(data,show=True,save=True,name='Pareto_Front_END')
+
 
         path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\ContinuousVariables\Losses'
         plt.figure('G losses')
@@ -700,9 +725,12 @@ class AssigningProblemGAN:
 
 
 
+
+
+
                 
 
-model_name = 'CVTest5'
+model_name = 'CVTest6Max'
 
 
 GAN = AssigningProblemGAN(model_name=model_name)
@@ -712,8 +740,8 @@ GAN = AssigningProblemGAN(model_name=model_name)
 # costs = data[:, 0]  # Extract the costs column
 # sciences = data[:, 1]  # Extract the sciences column
 # designs = data[:, 2:]  # Extract the designs columns
-#GAN.train()
-#GAN.generator.save(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\ContinuousVariables\Models\generator_model_'+model_name+'.h5')
+GAN.train()
+GAN.generator.save(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\ContinuousVariables\Models\generator_model_'+model_name+'.h5')
 
 
 
@@ -792,6 +820,11 @@ output_path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Resu
 df.to_excel(output_path, index=False)
 
 print('Number of function evaluations: '+str(GAN.number_function_evaluations))
+
+
+
+
+
 
 
 

@@ -18,6 +18,7 @@ import os
 import itertools
 
 
+
 EPSILON = 1e-7
 
 
@@ -35,8 +36,8 @@ class AssigningProblemGAN:
         self.num_examples = 500
         self.latent_dim = 256
         self.batch_size = 8
-        self.num_epochs = 50
-        self.num_episodes = 5
+        self.num_epochs = 5
+        self.num_episodes = 2
         self.learning_rate = 0.002
         self.beta1 = 0.1
         self.generator_optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=self.beta1)
@@ -50,6 +51,8 @@ class AssigningProblemGAN:
         self.num_pareto_fronts = 4
         self.lambda0 = 2
         self.gamma1 = 0.5
+        self.data = []
+        self.hv_values = []
 
 
         # Build the discriminator model
@@ -119,20 +122,26 @@ class AssigningProblemGAN:
  
 
     def evaluate_design(self,designs):
-        if len(designs) == 60:
-            self.number_function_evaluations+=1
-            return Client.evaluateA(designs)
-        else:
-            sciences = []
-            costs = []
+        self.number_function_evaluations+=1
+        objective_values = []
 
-            for design in designs:
-                design = design.numpy().tolist()
-                power, cost = Client.evaluateA(design)
-                sciences.append(power)
-                costs.append(cost)
+        for design in self.data:
+            data_tuple = tuple(design)
+            objective = list(self.evaluated_designs[data_tuple])
+            objective[0] = (1+objective[0])
+            objective[1] = objective[1]
+            objective_values.append(objective)
+        reference_point = [1,1]
 
-            return sum(sciences)/len(sciences), sum(costs)/len(costs)
+        # Calculate the hypervolume
+        hypervolume_calculator = HV(ref_point=reference_point)
+        hypervolume_value = hypervolume_calculator.do(np.array(objective_values))
+        self.hv_values.append(hypervolume_value)
+
+
+
+        return Client.evaluateA(designs)
+
         
 
 
@@ -543,19 +552,19 @@ class AssigningProblemGAN:
         g_losses = []
         sciences = []
         costs = []
-        data = self.generate_real_samples(self.num_examples)
+        self.data = self.generate_real_samples(self.num_examples)
         #real_data = dataArray
         
         for nep in range(self.num_episodes):
 
             print(f"Episode {nep}")
             #calculate = nep!= 0
-            real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=nep!=0, name='Pareto_Front_INIT')
+            real_data = self.pareto_front_calculator(solutions=self.data, show=nep==0, save=nep==0, calculate=nep!=0, name='Pareto_Front_INIT')
             #real_data = self.pareto_front_calculator(solutions=real_data, show=nep==0, save=nep==0, calculate=True)
             #real_data = self.pareto_front_calculator(solutions=data, show=nep==0, save=nep==0, calculate=nep!=0)
             #self.batch_size=len(real_data)
             real_data_sliced = self.create_batches(real_data)
-            data = real_data
+            self.data = real_data
         
             for epoch in range(self.num_epochs):
                 g_losses_batch = []
@@ -617,7 +626,7 @@ class AssigningProblemGAN:
                         sciences.append(science*self.science_max)
                         costs.append(cost*self.cost_max)
                         #gst = np.expand_dims(generated_samples_thresh,axis=0)
-                        data = np.vstack((data,generated_samples_thresh))
+                        self.data = np.vstack((self.data,generated_samples_thresh))
                         # gen_samples_soft = self.gumbel_softmax(generated_samples_thresh, 0.5)
                         #data = np.concatenate(data,generated_samples_thresh)
                     
@@ -658,7 +667,7 @@ class AssigningProblemGAN:
 
 
         print(self.number_function_evaluations)
-        self.pareto_front_calculator(data,show=True,save=True,name='Pareto_Front_END')
+        self.pareto_front_calculator(self.data,show=True,save=True,name='Pareto_Front_END')
 
         path = r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Losses'
         plt.figure('G losses')
@@ -694,6 +703,17 @@ class AssigningProblemGAN:
         plt.legend()
         plt.savefig(path + '\dl'+self.model_name+'.png')
         plt.show()
+
+
+        plt.figure('HV performance')
+        plt.plot(self.hv_values, label='Hypervolume')
+        plt.xlabel('NFEs')
+        plt.ylabel('Hypervolume')
+        plt.legend()
+        plt.savefig(path + '\hv'+self.model_name+'.png')
+        plt.show()
+
+
        
 
 
@@ -704,7 +724,7 @@ class AssigningProblemGAN:
 
                 
 
-model_name = 'PR4DPP'
+model_name = 'PRDPPHV'
 
 
 GAN = AssigningProblemGAN(model_name=model_name)
@@ -715,10 +735,8 @@ GAN = AssigningProblemGAN(model_name=model_name)
 # costs = data[:, 0]  # Extract the costs column
 # sciences = data[:, 1]  # Extract the sciences column
 # designs = data[:, 2:]  # Extract the designs columns
-#GAN.train()
-#GAN.generator.save(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Models\generator_model_'+model_name+'.h5')
-
-
+GAN.train()
+GAN.generator.save(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Models\generator_model_'+model_name+'.h5')
 
 ## Load the saved generator model
 generator = load_model(r'C:\Users\dforn\Documents\TEXASAM\PROJECTS\VASSAR_generative\Results\AssigningProblem\Models\generator_model_'+model_name+'.h5', custom_objects={'generator_total_loss': GAN.generator_total_loss, 'discriminator_loss':GAN.discriminator_loss, 'genarator_loss':GAN.generator_loss})
